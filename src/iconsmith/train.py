@@ -15,6 +15,7 @@ from pathlib import Path
 
 import torch
 from torch.utils.data import DataLoader, Subset
+from tqdm import tqdm
 
 from iconsmith.data import IconDataset, collate
 from iconsmith.model import IconSmith, ModelConfig
@@ -44,7 +45,16 @@ class TrainConfig:
 def resolve_device(name: str) -> str:
     if name != "auto":
         return name
+    if torch.cuda.is_available():
+        return "cuda"
     return "mps" if torch.backends.mps.is_available() else "cpu"
+
+
+def _sync(device: str) -> None:
+    if device.startswith("cuda"):
+        torch.cuda.synchronize()
+    elif device == "mps":
+        torch.mps.synchronize()
 
 
 def _to(batch: dict, device: str) -> dict:
@@ -126,9 +136,10 @@ def train(cfg: TrainConfig, model_cfg: ModelConfig | None = None) -> dict:
     use_bf16 = cfg.bf16 and device != "cpu"
 
     def autocast():
+        dev_type = device.split(":")[0]
         if use_bf16:
-            return torch.autocast(device_type=device, dtype=torch.bfloat16)
-        return torch.autocast(device_type=device, enabled=False)
+            return torch.autocast(device_type=dev_type, dtype=torch.bfloat16)
+        return torch.autocast(device_type=dev_type, enabled=False)
 
     log_path = cfg.run_dir / "log.csv"
     with open(log_path, "w", newline="") as f:
@@ -146,6 +157,7 @@ def train(cfg: TrainConfig, model_cfg: ModelConfig | None = None) -> dict:
     running, n_run = 0.0, 0
     model.train()
     done = False
+    bar = tqdm(total=total_steps, desc="train", unit="step", dynamic_ncols=True)
     while not done:
         for batch in train_loader:
             if step >= total_steps:
@@ -172,17 +184,18 @@ def train(cfg: TrainConfig, model_cfg: ModelConfig | None = None) -> dict:
             step += 1
             running += loss.item()
             n_run += 1
+            bar.update(1)
+            if step % 5 == 0:
+                bar.set_postfix(loss=f"{loss.item():.3f}", tok_s=f"{tps:.0f}", refresh=False)
             if step == 10:
-                if device == "mps":
-                    torch.mps.synchronize()
+                _sync(device)
                 t_start, tokens_seen = time.time(), 0
             if step > 10:
                 tokens_seen += int((batch["tokens"][:, 1:] != PAD).sum().item())
 
             if step % cfg.log_every == 0 or step == total_steps:
                 if t_start is not None and step > 10:
-                    if device == "mps":
-                        torch.mps.synchronize()
+                    _sync(device)
                     tps = tokens_seen / max(1e-9, time.time() - t_start)
                 val = ""
                 if step % cfg.eval_every == 0 or step == total_steps:
@@ -192,8 +205,8 @@ def train(cfg: TrainConfig, model_cfg: ModelConfig | None = None) -> dict:
                 with open(log_path, "a", newline="") as f:
                     lr_now = lr_at(step, cfg, total_steps)
                     csv.writer(f).writerow([step, f"{tr:.4f}", val, f"{lr_now:.2e}", f"{tps:.0f}"])
-                print(f"[train] step {step}/{total_steps} loss {tr:.4f} val {val or '-'} "
-                      f"lr {lr_at(step, cfg, total_steps):.2e} tok/s {tps:.0f}")
+                bar.write(f"[train] step {step}/{total_steps} loss {tr:.4f} val {val or '-'} "
+                          f"lr {lr_at(step, cfg, total_steps):.2e} tok/s {tps:.0f}")
             if step % cfg.eval_every == 0 or step == total_steps:
                 torch.save(
                     {"model_cfg": asdict(model_cfg),
@@ -201,6 +214,7 @@ def train(cfg: TrainConfig, model_cfg: ModelConfig | None = None) -> dict:
                      "state_dict": model.state_dict(), "step": step},
                     cfg.run_dir / "ckpt_last.pt",
                 )
+    bar.close()
     _plot(log_path, cfg.run_dir / "loss.png")
     rows = list(csv.DictReader(open(log_path)))
     final_val = next((float(r["val_loss"]) for r in reversed(rows) if r["val_loss"]), float("nan"))

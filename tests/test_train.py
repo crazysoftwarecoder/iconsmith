@@ -21,3 +21,18 @@ def test_train_smoke_writes_artifacts(processed, tmp_path):
     assert (tmp_path / "run" / "loss.png").exists()
     assert float(rows[-1]["train_loss"]) < float(rows[0]["train_loss"])
     assert any(r["val_loss"] not in ("", None) for r in rows)
+
+
+def test_resolve_device_prefers_cuda_then_mps(monkeypatch):
+    import torch
+
+    from iconsmith.train import resolve_device
+
+    monkeypatch.setattr(torch.cuda, "is_available", lambda: True)
+    assert resolve_device("auto") == "cuda"
+    monkeypatch.setattr(torch.cuda, "is_available", lambda: False)
+    monkeypatch.setattr(torch.backends.mps, "is_available", lambda: True)
+    assert resolve_device("auto") == "mps"
+    monkeypatch.setattr(torch.backends.mps, "is_available", lambda: False)
+    assert resolve_device("auto") == "cpu"
+    assert resolve_device("cuda:1") == "cuda:1"
