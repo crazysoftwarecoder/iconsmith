@@ -16,6 +16,7 @@ dependencies = [
     "tqdm",
     "requests",
     "resvg-py>=0.5.0",
+    "matplotlib>=3.11.2",
 ]
 
 [dependency-groups]
