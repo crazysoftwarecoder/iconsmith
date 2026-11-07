@@ -13,6 +13,7 @@ from iconsmith.dataset_build import set_file_name
 from iconsmith.tokenizer import PAD
 
 K = 8
+EXEMPLAR_MAX_LEN = 256  # style is evident from the first subpaths; keeps the encoder cheap
 SPLITS = ("train", "inset_test", "heldout")
 
 
@@ -38,10 +39,19 @@ class _SetShard:
 
 
 class IconDataset(Dataset):
-    def __init__(self, processed_root: Path, split: str, *, k: int = K, seed: int = 0) -> None:
+    def __init__(
+        self,
+        processed_root: Path,
+        split: str,
+        *,
+        k: int = K,
+        seed: int = 0,
+        exemplar_max_len: int = EXEMPLAR_MAX_LEN,
+    ) -> None:
         if split not in SPLITS:
             raise ValueError(f"split must be one of {SPLITS}")
         self.k = k
+        self.exemplar_max_len = exemplar_max_len
         self.rng = np.random.default_rng(seed)
         metas = json.loads((processed_root / "sets.json").read_text())
         self.set_names = [m["name"] for m in metas]
@@ -84,7 +94,7 @@ class IconDataset(Dataset):
         replace = len(candidates) < self.k
         picks = self.rng.choice(candidates, size=self.k, replace=replace)
         shard = self.shards[set_idx]
-        return [shard.item_tokens(int(p)) for p in picks]
+        return [shard.item_tokens(int(p))[: self.exemplar_max_len] for p in picks]
 
     def __getitem__(self, i: int) -> dict:
         set_idx, row = self.items[i]

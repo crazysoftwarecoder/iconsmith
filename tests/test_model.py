@@ -95,3 +95,11 @@ def test_runs_on_mps_if_available():
     m = IconSmith(tiny()).to("mps")
     b = {k: (v.to("mps") if torch.is_tensor(v) else v) for k, v in fake_batch().items()}
     assert torch.isfinite(m.loss(b))
+
+
+def test_trailing_padding_does_not_change_earlier_logits():
+    m = IconSmith(tiny()).eval()
+    b = fake_batch(L=12)
+    short = m(b["tokens"][:, :7], b["text_emb"], b["exemplars"], b["stroke_bucket"])
+    long = m(b["tokens"], b["text_emb"], b["exemplars"], b["stroke_bucket"])
+    assert torch.allclose(short, long[:, :6], atol=1e-5)

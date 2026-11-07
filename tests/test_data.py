@@ -51,3 +51,10 @@ def test_heldout_split_empty_when_no_heldout_sets(processed):
 
 def test_set_names_order(processed):
     assert set_names(processed) == ["fake/a", "fake/b"]
+
+
+def test_exemplars_truncated_to_max_len(processed):
+    ds = IconDataset(processed, "train", exemplar_max_len=8)
+    it = ds[0]
+    assert it["exemplars"].shape == (K, 8)
+    assert (it["exemplars"] != PAD).all()  # truncated, not padded

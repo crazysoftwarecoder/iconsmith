@@ -73,12 +73,14 @@ class Attention(nn.Module):
         self.out = nn.Linear(d, d, bias=False)
         self.dropout = dropout
 
-    def forward(self, x: Tensor, mask: Tensor, cos: Tensor, sin: Tensor) -> Tensor:
+    def forward(self, x: Tensor, mask: Tensor | None, cos: Tensor, sin: Tensor) -> Tensor:
         b, s, d = x.shape
         q, k, v = self.qkv(x).view(b, s, 3, self.h, d // self.h).permute(2, 0, 3, 1, 4)
         q, k = apply_rope(q, cos, sin), apply_rope(k, cos, sin)
+        # mask=None means causal via the fused kernel (no materialised S x S mask).
         y = F.scaled_dot_product_attention(
-            q, k, v, attn_mask=mask, dropout_p=self.dropout if self.training else 0.0
+            q, k, v, attn_mask=mask, is_causal=mask is None,
+            dropout_p=self.dropout if self.training else 0.0,
         )
         return self.out(y.transpose(1, 2).reshape(b, s, d))
 
@@ -102,7 +104,7 @@ class Block(nn.Module):
         self.n2 = RMSNorm(d)
         self.mlp = SwiGLU(d, d_ff)
 
-    def forward(self, x: Tensor, mask: Tensor, cos: Tensor, sin: Tensor) -> Tensor:
+    def forward(self, x: Tensor, mask: Tensor | None, cos: Tensor, sin: Tensor) -> Tensor:
         x = x + self.attn(self.n1(x), mask, cos, sin)
         return x + self.mlp(self.n2(x))
 
@@ -114,7 +116,7 @@ class Transformer(nn.Module):
         self.norm = RMSNorm(d)
         self.head_dim = d // n_heads
 
-    def forward(self, x: Tensor, mask: Tensor) -> Tensor:
+    def forward(self, x: Tensor, mask: Tensor | None) -> Tensor:
         cos, sin = rope_cache(x.shape[1], self.head_dim, x.device)
         for blk in self.blocks:
             x = blk(x, mask, cos, sin)
@@ -212,10 +214,9 @@ class IconSmith(nn.Module):
         prefix = self._prefix(text_emb, exemplars, stroke_bucket, drop_style, drop_text)
         inp = tokens[:, :-1]
         x = torch.cat([prefix, self.tok_emb(inp)], dim=1)
-        pad = torch.cat(
-            [torch.zeros(prefix.shape[:2], dtype=torch.bool, device=x.device), inp == PAD], dim=1
-        )
-        h = self.decoder(x, _mask_from_padding(pad, causal=True))
+        # Padding is trailing-only, so causal attention already keeps pads from influencing
+        # real positions; pad positions themselves are ignored by the loss.
+        h = self.decoder(x, None)
         return self.head(h[:, self.prefix_len :])
 
     def loss(self, batch: dict) -> Tensor:
