@@ -1,0 +1,85 @@
+{
+ "n": 500,
+ "skipped": 0,
+ "px": 256,
+ "mean": 0.9803680604176787,
+ "p5": 0.9568781836276214,
+ "p50": 0.983040575243965,
+ "worst": [
+  [
+   "bootstrap",
+   "heart-pulse-fill",
+   0.8493
+  ],
+  [
+   "material/rounded",
+   "g_mobiledata",
+   0.9057
+  ],
+  [
+   "fluent/regular",
+   "full-screen-minimize",
+   0.9155
+  ],
+  [
+   "material/sharp",
+   "format_letter_spacing_standard",
+   0.9258
+  ],
+  [
+   "iconoir/regular",
+   "playlist-plus",
+   0.933
+  ],
+  [
+   "material/outlined",
+   "door_sensor",
+   0.94
+  ],
+  [
+   "phosphor/thin",
+   "text-align-justify",
+   0.9408
+  ],
+  [
+   "ionicons/outline",
+   "help-circle",
+   0.9417
+  ],
+  [
+   "material/outlined",
+   "airline_seat_individual_suite",
+   0.9425
+  ],
+  [
+   "material/sharp",
+   "tv_options_edit_channels",
+   0.9431
+  ]
+ ],
+ "per_set": {
+  "bootstrap": 0.9846008235211533,
+  "fluent/filled": 0.9880956020056034,
+  "fluent/regular": 0.9759178417632278,
+  "heroicons/outline": 0.9818567698853483,
+  "heroicons/solid": 0.9873581835729069,
+  "iconoir/regular": 0.9749716887322333,
+  "iconoir/solid": 0.986937771033344,
+  "ionicons/filled": 0.992500938546537,
+  "ionicons/outline": 0.9709313660080353,
+  "ionicons/sharp": 0.9934407299106051,
+  "lucide": 0.9802196996550019,
+  "material/outlined": 0.9765276021049442,
+  "material/rounded": 0.9750389742361073,
+  "material/sharp": 0.9739086301406843,
+  "octicons": 0.9868284456601487,
+  "phosphor/bold": 0.9870759321932634,
+  "phosphor/fill": 0.9912306674355008,
+  "phosphor/regular": 0.9824128597309862,
+  "phosphor/thin": 0.9652219518496589,
+  "remix/fill": 0.9879459062305745,
+  "remix/line": 0.9791017541371445,
+  "tabler/filled": 0.9935348549760679,
+  "tabler/outline": 0.9804259779400557
+ }
+}
