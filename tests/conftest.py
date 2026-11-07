@@ -13,9 +13,11 @@ def _make_fake_raw(root: Path, monkeypatch, tiny: bool = False) -> Path:
     (lib / "a").mkdir(parents=True)
     (lib / "b").mkdir()
     n = 3 if tiny else 12
-    for i in range(n):
-        (lib / "a" / f"icon-{i}.svg").write_text((FX / "lucide_arrow.svg").read_text())
-        (lib / "b" / f"icon-{i}.svg").write_text((FX / "tabler_circle_check.svg").read_text())
+    arrow = (FX / "lucide_arrow.svg").read_text()
+    check = (FX / "tabler_circle_check.svg").read_text()
+    for i in range(n):  # perturb each copy so rows have distinct token sequences
+        (lib / "a" / f"icon-{i}.svg").write_text(arrow.replace("M7 7h10v10", f"M7 {7 + i}h10v10"))
+        (lib / "b" / f"icon-{i}.svg").write_text(check.replace("M17 3.34", f"M{17 - i} 3.34"))
     if not tiny:
         (lib / "a" / "broken.svg").write_text("<svg viewBox='0 0 24 24'></svg>")
         (lib / "b" / "huge.svg").write_text(

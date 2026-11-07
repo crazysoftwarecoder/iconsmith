@@ -44,14 +44,20 @@ def _float(v: object, default: float) -> float:
         return default
 
 
-def _viewbox(svg: se.SVG) -> tuple[float, float, float, float]:
-    vb = svg.viewbox
-    if vb is not None and vb.width and vb.height:
-        return float(vb.x or 0), float(vb.y or 0), float(vb.width), float(vb.height)
+def _frame(svg: se.SVG) -> tuple[float, float, float, float]:
+    """The coordinate frame svgelements reified into: (0, 0, width, height).
+
+    With ``reify=True`` svgelements applies the viewBox transform itself, so element
+    coordinates already live in the ``width`` x ``height`` space (which defaults to the
+    viewBox size when width/height are absent or percentages).
+    """
     w, h = _float(svg.width, 0.0), _float(svg.height, 0.0)
     if w > 0 and h > 0:
         return 0.0, 0.0, w, h
-    raise SvgParseError("no viewBox or width/height")
+    vb = svg.viewbox
+    if vb is not None and vb.width and vb.height:
+        return float(vb.x or 0), float(vb.y or 0), float(vb.width), float(vb.height)
+    raise SvgParseError("no usable width/height or viewBox")
 
 
 def _quad_to_cubic(seg: se.QuadraticBezier) -> se.CubicBezier:
@@ -105,9 +111,11 @@ def _build_subpath(
 ) -> Subpath | None:
     cmds: list[Command] = [(c, tuple(_quantise(p, vb, grid) for p in pts)) for c, pts in raw]
     distinct = {p for _, pts in cmds for p in pts}
-    min_pts = 3 if mode != "stroke" else 2
-    if len(distinct) < min_pts:
-        return None
+    if mode != "stroke":
+        if len(distinct) < 3:  # a fill with no area
+            return None
+    elif len(distinct) == 1:  # zero-length stroke: a dot when caps are round
+        cmds = [cmds[0], ("L", cmds[0][1])]
     if mode == "stroke" and closed:
         start = cmds[0][1][0]
         if cmds[-1][1][-1] != start:
@@ -121,7 +129,7 @@ def parse_svg(text: str, grid: int = GRID) -> ParsedIcon:
         svg = se.SVG.parse(io.StringIO(text), reify=True)
     except Exception as e:  # svgelements raises assorted exceptions on bad input
         raise SvgParseError(f"svgelements failed: {e}") from e
-    vb = _viewbox(svg)
+    vb = _frame(svg)
     subpaths: list[Subpath] = []
     stroke_widths: list[float] = []
     dropped = 0

@@ -8,6 +8,11 @@ from iconsmith.tokenizer import GRID
 FX = Path(__file__).parent / "fixtures"
 
 
+def g(frac):
+    """Grid coordinate for a fraction of the frame."""
+    return round(frac * (GRID - 1))
+
+
 def load(n):
     return (FX / n).read_text()
 
@@ -39,9 +44,10 @@ def test_transform_applied():
     pts = [pt for s in p.icon.subpaths for _, ps in s.commands for pt in ps]
     xs = [x for x, _ in pts]
     ys = [y for _, y in pts]
-    # rect ends up covering the centre 6..18 of 24 -> grid 32..96
-    assert min(xs) == pytest.approx(32, abs=1) and max(xs) == pytest.approx(96, abs=1)
-    assert min(ys) == pytest.approx(32, abs=1) and max(ys) == pytest.approx(96, abs=1)
+    # rect ends up covering the centre 6..18 of 24
+    lo, hi = g(6 / 24), g(18 / 24)
+    assert min(xs) == pytest.approx(lo, abs=1) and max(xs) == pytest.approx(hi, abs=1)
+    assert min(ys) == pytest.approx(lo, abs=1) and max(ys) == pytest.approx(hi, abs=1)
 
 
 def test_mixed_mode_yields_stroke_and_fill():
@@ -107,3 +113,46 @@ def test_closed_stroke_gets_explicit_return_line():
     cmds = [c for c, _ in sp.commands]
     assert cmds == ["M", "L", "L", "L", "L", "Z"]
     assert sp.commands[0][1][0] == sp.commands[-2][1][0]  # returns to start
+
+
+def _xy_range(p):
+    pts = [pt for s in p.icon.subpaths for _, ps in s.commands for pt in ps]
+    xs = [x for x, _ in pts]
+    ys = [y for _, y in pts]
+    return min(xs), max(xs), min(ys), max(ys)
+
+
+def test_material_offset_viewbox_with_width_height():
+    # viewBox="0 -960 960 960" width=48 height=48; glyph spans ~8..40 of 48
+    p = parse_svg(load("material_home.svg"))
+    x0, x1, y0, y1 = _xy_range(p)
+    assert g(6 / 48) < x0 < g(10 / 48) and g(38 / 48) < x1 < g(43 / 48)
+    assert g(4 / 48) < y0 < g(10 / 48) and g(38 / 48) < y1 < g(45 / 48)
+
+
+def test_offset_viewbox_without_width_height():
+    svg = ('<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 -960 960 960">'
+           '<path d="M160-160h640v-640H160z"/></svg>')
+    p = parse_svg(svg)
+    x0, x1, y0, y1 = _xy_range(p)
+    assert x0 == pytest.approx(g(160 / 960), abs=1) and x1 == pytest.approx(g(800 / 960), abs=1)
+    assert y0 == pytest.approx(g(160 / 960), abs=1) and y1 == pytest.approx(g(800 / 960), abs=1)
+
+
+def test_percent_width_falls_back_to_viewbox():
+    svg = ('<svg xmlns="http://www.w3.org/2000/svg" width="100%" height="100%" '
+           'viewBox="0 0 48 48"><rect x="12" y="12" width="24" height="24"/></svg>')
+    p = parse_svg(svg)
+    x0, x1, y0, y1 = _xy_range(p)
+    assert x0 == pytest.approx(g(12 / 48), abs=1) and x1 == pytest.approx(g(36 / 48), abs=1)
+
+
+def test_zero_length_stroke_dot_is_kept():
+    # Tabler/Lucide idiom: a near-zero-length stroke with round caps renders as a dot.
+    svg = ('<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" '
+           'stroke="black" stroke-width="2" stroke-linecap="round"><path d="M8 16h.013"/></svg>')
+    p = parse_svg(svg)
+    assert len(p.icon.subpaths) == 1 and p.n_dropped_elements == 0
+    (sp,) = p.icon.subpaths
+    assert [c for c, _ in sp.commands] == ["M", "L", "Z"]
+    assert sp.commands[0][1][0] == sp.commands[1][1][0]

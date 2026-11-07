@@ -5,7 +5,7 @@ import pytest
 
 from iconsmith.render import icon_to_svg, iou, rasterize
 from iconsmith.svg_parse import parse_svg
-from iconsmith.tokenizer import Icon, Subpath
+from iconsmith.tokenizer import GRID, Icon, Subpath
 
 FX = Path(__file__).parent / "fixtures"
 
@@ -16,10 +16,10 @@ def test_filled_square_covers_expected_area():
             Subpath(
                 "fill_nz",
                 (
-                    ("M", ((32, 32),)),
-                    ("L", ((95, 32),)),
-                    ("L", ((95, 95),)),
-                    ("L", ((32, 95),)),
+                    ("M", ((GRID // 4, GRID // 4),)),
+                    ("L", ((3 * GRID // 4, GRID // 4),)),
+                    ("L", ((3 * GRID // 4, 3 * GRID // 4),)),
+                    ("L", ((GRID // 4, 3 * GRID // 4),)),
                     ("Z", ()),
                 ),
             ),
@@ -27,7 +27,7 @@ def test_filled_square_covers_expected_area():
     )
     m = rasterize(icon_to_svg(sq, None), 64)
     assert m.shape == (64, 64) and m.dtype == bool
-    assert 0.20 < m.mean() < 0.30  # ~ (63/127)^2 = 0.246
+    assert 0.22 < m.mean() < 0.28  # ~ (1/2)^2
 
 
 def test_iou_identity_and_disjoint():
@@ -57,3 +57,11 @@ def test_stroke_subpath_rendered_without_close():
     p = parse_svg((FX / "lucide_arrow.svg").read_text())
     svg = icon_to_svg(p.icon, p.stroke_width_rel)
     assert "Z" not in svg and 'fill="none"' in svg and "stroke-width" in svg
+
+
+def test_dot_stroke_renders_nonempty():
+    svg = ('<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" '
+           'stroke="black" stroke-width="2" stroke-linecap="round"><path d="M8 16h.013"/></svg>')
+    p = parse_svg(svg)
+    m = rasterize(icon_to_svg(p.icon, p.stroke_width_rel), 64)
+    assert m.sum() > 10

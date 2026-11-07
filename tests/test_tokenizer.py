@@ -6,6 +6,7 @@ from iconsmith.tokenizer import (
     EOS,
     FILL_EO,
     FILL_NZ,
+    GRID,
     STROKE,
     C,
     GrammarState,
@@ -56,7 +57,7 @@ def test_encode_layout():
 
 def test_coord_out_of_range_rejected():
     with pytest.raises(ValueError):
-        encode(Icon((Subpath("stroke", (("M", ((128, 0),)), ("Z", ()))),)))
+        encode(Icon((Subpath("stroke", (("M", ((GRID, 0),)), ("Z", ()))),)))
 
 
 def test_decode_rejects_ungrammatical():

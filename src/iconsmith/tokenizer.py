@@ -10,7 +10,7 @@ from dataclasses import dataclass
 
 import numpy as np
 
-GRID = 128
+GRID = 256
 MAX_TOKENS = 1024
 
 PAD, BOS, EOS, M, L, C, Z, STROKE, FILL_NZ, FILL_EO = range(10)
