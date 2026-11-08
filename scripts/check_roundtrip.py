@@ -21,7 +21,11 @@ from iconsmith.tokenizer import decode, encode
 
 def main(raw_root: Path, n: int = 500, px: int = 128, seed: int = 0) -> dict:
     rng = random.Random(seed)
-    files = [(spec.name, name, p) for src, spec in all_sets() for name, p in iter_set_files(raw_root, src, spec)]
+    files = [
+        (spec.name, name, p)
+        for src, spec in all_sets()
+        for name, p in iter_set_files(raw_root, src, spec)
+    ]
     sample = rng.sample(files, min(n, len(files)))
     results: list[tuple[str, str, float]] = []
     skipped = 0
