@@ -25,14 +25,27 @@ from iconsmith.data import EXEMPLAR_MAX_LEN, K, _SetShard
 from iconsmith.model import IconSmith, ModelConfig
 from iconsmith.render import icon_to_svg
 from iconsmith.text_embed import embed_names
-from iconsmith.tokenizer import BOS, MAX_TOKENS, PAD, GrammarState, decode
+from iconsmith.tokenizer import (
+    BOS,
+    COORD_OFFSET,
+    MAX_TOKENS,
+    PAD,
+    VOCAB_SIZE,
+    GrammarState,
+    decode,
+)
 from iconsmith.train import resolve_device
 
 
 def load_model(ckpt_path: Path, device: str) -> IconSmith:
     ckpt = torch.load(ckpt_path, map_location="cpu", weights_only=False)
     model = IconSmith(ModelConfig(**ckpt["model_cfg"]))
-    model.load_state_dict(ckpt["state_dict"])
+    sd = ckpt["state_dict"]
+    if sd["null_text"].ndim == 1:  # v1 checkpoints stored a single text slot without the slot dim
+        sd["null_text"] = sd["null_text"][None]
+    model.load_state_dict(sd)
+    # exemplars must be ordered the way the model was trained on them
+    model.canonical = ckpt.get("train_cfg", {}).get("canonical") == "True"
     print(f"[gen] loaded {ckpt_path} (step {ckpt.get('step')})")
     return model.to(device).eval()
 
@@ -48,46 +61,55 @@ def pick_exemplars(shard: _SetShard, rng: np.random.Generator, k: int) -> tuple[
 
 
 @torch.no_grad()
-def sample(model, text_emb, exemplars, stroke_bucket, n, temperature, top_p, device, gen):
-    """Autoregressive grammar-constrained sampling of n icons sharing one conditioning prefix."""
+def sample(model, text_emb, exemplars, stroke_bucket, n, temperature, top_p, device, gen, cfg=1.0,
+           guide_structure=True):
+    """Autoregressive grammar-constrained sampling of n icons (KV-cached).
+
+    text_emb is [1, D] (shared) or [n, D]. With cfg != 1 the name-less prediction is decoded in
+    the same batch and the logits are pushed away from it (classifier-free guidance).
+    """
     text_emb = text_emb.expand(n, -1).to(device)
     exemplars = exemplars.expand(n, -1, -1).to(device)
     bucket = torch.full((n,), stroke_bucket, dtype=torch.long, device=device)
-    seqs = torch.full((n, 1), BOS, dtype=torch.long, device=device)
+    drop = torch.zeros(n, dtype=torch.bool, device=device)
+    rows = 2 if cfg != 1.0 else 1
+    if rows == 2:
+        text_emb, exemplars, bucket = (torch.cat([x, x]) for x in (text_emb, exemplars, bucket))
+        drop = torch.cat([drop, ~drop])
     grammars = [GrammarState() for _ in range(n)]
     for g in grammars:
         g.step(BOS)
     dtype = torch.bfloat16 if device.startswith("cuda") else torch.float32
-    for _ in range(MAX_TOKENS - 1):
-        if all(g.done for g in grammars):
-            break
-        # forward() feeds tokens[:, :-1]; append a dummy so the last logit predicts the next token
-        inp = torch.cat([seqs, torch.full((n, 1), PAD, dtype=torch.long, device=device)], 1)
-        with torch.autocast(device_type=device.split(":")[0], dtype=dtype):
-            logits = model(inp, text_emb, exemplars, bucket)[:, -1].float()
-        allowed = torch.from_numpy(np.stack([
-            g.allowed() if not g.done else np.eye(logits.shape[-1], dtype=bool)[PAD]
-            for g in grammars
-        ])).to(device)
-        logits = logits.masked_fill(~allowed, float("-inf")) / max(temperature, 1e-5)
-        probs = torch.softmax(logits, -1)
-        if top_p < 1.0:
-            sp, si = probs.sort(-1, descending=True)
-            keep = sp.cumsum(-1) - sp < top_p
-            probs = torch.zeros_like(probs).scatter(-1, si, sp * keep)
-            probs = probs / probs.sum(-1, keepdim=True)
-        nxt = torch.multinomial(probs, 1, generator=gen).squeeze(1)
-        for i, g in enumerate(grammars):
-            if g.done:
-                nxt[i] = PAD
-            else:
-                g.step(int(nxt[i]))
-        seqs = torch.cat([seqs, nxt[:, None]], 1)
-    out = []
-    for i, g in enumerate(grammars):
-        toks = [t for t in seqs[i].tolist() if t != PAD]
-        out.append(toks if g.done else None)  # None = hit MAX_TOKENS before EOS
-    return out
+    seqs = [[BOS] for _ in range(n)]
+    bos = torch.full((rows * n, 1), BOS, dtype=torch.long, device=device)
+    pad_only = np.eye(VOCAB_SIZE, dtype=bool)[PAD]
+    with torch.autocast(device_type=device.split(":")[0], dtype=dtype):
+        out, cache = model.start_decode(bos, text_emb, exemplars, bucket, drop)
+        for _ in range(MAX_TOKENS - 1):
+            if all(g.done for g in grammars):
+                break
+            logits = out.float()
+            if rows == 2:
+                cond, null = torch.log_softmax(logits[:n], -1), torch.log_softmax(logits[n:], -1)
+                logits = null + cfg * (cond - null)
+                if not guide_structure:  # leave EOS/Z/M unguided (tested: worse, 11% vs 16% on v2)
+                    logits[:, :COORD_OFFSET] = cond[:, :COORD_OFFSET]
+            allowed = torch.from_numpy(np.stack([
+                pad_only if g.done else g.allowed() for g in grammars])).to(device)
+            logits = logits.masked_fill(~allowed, float("-inf")) / max(temperature, 1e-5)
+            probs = torch.softmax(logits, -1)
+            if top_p < 1.0:
+                sp, si = probs.sort(-1, descending=True)
+                keep = sp.cumsum(-1) - sp < top_p
+                probs = torch.zeros_like(probs).scatter(-1, si, sp * keep)
+                probs = probs / probs.sum(-1, keepdim=True)
+            nxt = torch.multinomial(probs, 1, generator=gen).squeeze(1)
+            for i, g in enumerate(grammars):
+                if not g.done:
+                    g.step(int(nxt[i]))
+                    seqs[i].append(int(nxt[i]))
+            out = model.step_decode(nxt.repeat(rows), cache)
+    return [s if g.done else None for s, g in zip(seqs, grammars, strict=True)]
 
 
 def png(svg: str, px: int) -> Image.Image:
@@ -104,6 +126,7 @@ def main() -> None:
     ap.add_argument("-n", "--num", type=int, default=4, help="samples per name")
     ap.add_argument("--temperature", type=float, default=0.7)
     ap.add_argument("--top-p", type=float, default=0.95)
+    ap.add_argument("--cfg", type=float, default=1.0, help="name guidance; 1 = off, 2-5 = stronger")
     ap.add_argument("--seed", type=int, default=0)
     ap.add_argument("--out", type=Path, default=Path("runs/samples"))
     ap.add_argument("--device", default="auto")
@@ -124,7 +147,7 @@ def main() -> None:
     device = resolve_device(a.device)
     model = load_model(a.ckpt, device)
     meta = metas[a.set]
-    shard = _SetShard(a.processed, meta)
+    shard = _SetShard(a.processed, meta, model.canonical)
     rng = np.random.default_rng(a.seed)
     gen = torch.Generator(device=device).manual_seed(a.seed)
     exemplars, ex_info = pick_exemplars(shard, rng, K)
@@ -140,7 +163,7 @@ def main() -> None:
     text = torch.from_numpy(embed_names(a.name))
     for i, name in enumerate(a.name):
         results = sample(model, text[i : i + 1], exemplars[None], meta["stroke_bucket"],
-                         a.num, a.temperature, a.top_p, device, gen)
+                         a.num, a.temperature, a.top_p, device, gen, a.cfg)
         row, slug = [], name.strip().replace(" ", "-")
         for s, toks in enumerate(results):
             if toks is None:

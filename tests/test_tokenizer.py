@@ -111,3 +111,16 @@ def test_grammar_coord_slots_allow_only_coords():
         g.step(t)
     a = g.allowed()
     assert a[COORD_OFFSET:].all() and not a[:COORD_OFFSET].any()
+
+
+def test_canonical_order_sorts_within_mode_runs_only():
+    from iconsmith.tokenizer import canonical_order
+
+    def sp(mode, y):
+        return Subpath(mode, (("M", ((5, y),)), ("L", ((9, y),)), ("Z", ())))
+
+    icon = Icon((sp("stroke", 50), sp("stroke", 10), sp("fill_nz", 90), sp("fill_nz", 20),
+                 sp("stroke", 5)))
+    out = canonical_order(icon)
+    assert [s.mode for s in out.subpaths] == ["stroke", "stroke", "fill_nz", "fill_nz", "stroke"]
+    assert [s.commands[0][1][0][1] for s in out.subpaths] == [10, 50, 20, 90, 5]

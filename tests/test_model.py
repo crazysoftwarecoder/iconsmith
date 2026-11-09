@@ -103,3 +103,23 @@ def test_trailing_padding_does_not_change_earlier_logits():
     short = m(b["tokens"][:, :7], b["text_emb"], b["exemplars"], b["stroke_bucket"])
     long = m(b["tokens"], b["text_emb"], b["exemplars"], b["stroke_bucket"])
     assert torch.allclose(short, long[:, :6], atol=1e-5)
+
+
+def test_cached_decoding_matches_full_forward():
+    torch.manual_seed(0)
+    cfg = ModelConfig(d_model=64, n_layers=2, n_heads=4, d_ff=128, enc_d_model=64, enc_layers=1,
+                      enc_heads=4, n_text_tokens=4, text_scale=19.6)
+    m = IconSmith(cfg).eval()
+    b = 2
+    toks = torch.randint(10, 266, (b, 12))
+    toks[:, 0] = 1
+    text = torch.randn(b, cfg.text_dim)
+    ex = torch.randint(10, 266, (b, cfg.k, 6))
+    bucket = torch.zeros(b, dtype=torch.long)
+    drop = torch.tensor([False, True])
+    full = m(toks, text, ex, bucket, drop_style=torch.zeros(b, dtype=torch.bool), drop_text=drop)
+    logits, cache = m.start_decode(toks[:, :1], text, ex, bucket, drop)
+    steps = [logits]
+    for t in range(1, toks.shape[1] - 1):
+        steps.append(m.step_decode(toks[:, t], cache))
+    assert torch.allclose(torch.stack(steps, 1), full, atol=1e-4)

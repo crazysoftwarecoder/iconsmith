@@ -162,3 +162,25 @@ def decode(tokens: list[int]) -> Icon:
     if not g.done:
         raise ValueError("token sequence did not end in EOS")
     return Icon(tuple(subpaths))
+
+
+def canonical_order(icon: Icon) -> Icon:
+    """Sort subpaths top-to-bottom, then left-to-right, within each run of same-mode subpaths.
+
+    Source libraries draw parts in arbitrary order, which makes the first tokens (and so the whole
+    layout) needlessly hard to predict. Sorting only inside same-mode runs keeps the renderer's
+    merged ``<path>`` groups, and therefore fill-rule holes, exactly as they were.
+    """
+    def key(sp: Subpath) -> tuple[int, int]:
+        pts = [p for _, ps in sp.commands for p in ps]
+        return (min(y for _, y in pts), min(x for x, _ in pts)) if pts else (0, 0)
+
+    out: list[Subpath] = []
+    run: list[Subpath] = []
+    for sp in icon.subpaths:
+        if run and sp.mode != run[0].mode:
+            out.extend(sorted(run, key=key))
+            run = []
+        run.append(sp)
+    out.extend(sorted(run, key=key))
+    return Icon(tuple(out))

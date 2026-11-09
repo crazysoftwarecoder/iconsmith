@@ -40,6 +40,9 @@ class TrainConfig:
     max_steps: int | None = None
     device: str = "auto"
     eval_batches: int = 50
+    p_flip: float = 0.0
+    jitter: float = 0.0
+    canonical: bool = False
 
 
 def resolve_device(name: str) -> str:
@@ -113,12 +116,14 @@ def train(cfg: TrainConfig, model_cfg: ModelConfig | None = None) -> dict:
     device = resolve_device(cfg.device)
     cfg.run_dir.mkdir(parents=True, exist_ok=True)
 
-    train_ds = IconDataset(cfg.processed, "train", seed=cfg.seed)
+    train_ds = IconDataset(cfg.processed, "train", seed=cfg.seed, p_flip=cfg.p_flip,
+                           jitter=cfg.jitter, canonical=cfg.canonical)
     if cfg.overfit_n:
         train_ds = Subset(train_ds, list(range(min(cfg.overfit_n, len(train_ds)))))
         val_ds = train_ds
     else:
-        val_ds = IconDataset(cfg.processed, "inset_test", seed=cfg.seed + 1)
+        val_ds = IconDataset(cfg.processed, "inset_test", seed=cfg.seed + 1,
+                             canonical=cfg.canonical)
     train_loader = DataLoader(
         train_ds, batch_size=cfg.batch_size, shuffle=True, collate_fn=collate, drop_last=False
     )
@@ -157,6 +162,7 @@ def train(cfg: TrainConfig, model_cfg: ModelConfig | None = None) -> dict:
     running, n_run = 0.0, 0
     model.train()
     done = False
+    best_val = float("inf")
     bar = tqdm(total=total_steps, desc="train", unit="step", dynamic_ncols=True)
     while not done:
         for batch in train_loader:
@@ -208,12 +214,14 @@ def train(cfg: TrainConfig, model_cfg: ModelConfig | None = None) -> dict:
                 bar.write(f"[train] step {step}/{total_steps} loss {tr:.4f} val {val or '-'} "
                           f"lr {lr_at(step, cfg, total_steps):.2e} tok/s {tps:.0f}")
             if step % cfg.eval_every == 0 or step == total_steps:
-                torch.save(
-                    {"model_cfg": asdict(model_cfg),
-                     "train_cfg": {k: str(v) for k, v in asdict(cfg).items()},
-                     "state_dict": model.state_dict(), "step": step},
-                    cfg.run_dir / "ckpt_last.pt",
-                )
+                ckpt = {"model_cfg": asdict(model_cfg),
+                        "train_cfg": {k: str(v) for k, v in asdict(cfg).items()},
+                        "state_dict": model.state_dict(), "step": step}
+                torch.save(ckpt, cfg.run_dir / "ckpt_last.pt")
+                if val and float(val) < best_val:
+                    best_val = float(val)
+                    torch.save(ckpt, cfg.run_dir / "ckpt_best.pt")
+                    (cfg.run_dir / "ckpt_best.txt").write_text(f"{step} {val}\n")
     bar.close()
     _plot(log_path, cfg.run_dir / "loss.png")
     rows = list(csv.DictReader(open(log_path)))
@@ -240,12 +248,23 @@ def main() -> None:
     ap.add_argument("--n-layers", type=int, default=8)
     ap.add_argument("--n-heads", type=int, default=8)
     ap.add_argument("--d-ff", type=int, default=1408)
+    ap.add_argument("--p-flip", type=float, default=0.0, help="horizontal-flip augmentation prob")
+    ap.add_argument("--jitter", type=float, default=0.0, help="scale/shift augmentation, e.g. 0.15")
+    ap.add_argument("--canonical", action="store_true", help="sort subpaths top-left first")
+    ap.add_argument("--dropout", type=float, default=0.0)
+    ap.add_argument("--n-text-tokens", type=int, default=1)
+    ap.add_argument("--text-scale", type=float, default=1.0)
+    ap.add_argument("--p-drop-text", type=float, default=0.1)
     a = ap.parse_args()
     cfg = TrainConfig(processed=a.processed, run_dir=a.run_dir, epochs=a.epochs,
                       batch_size=a.batch_size, lr=a.lr, warmup_steps=a.warmup_steps,
                       overfit_n=a.overfit, max_steps=a.max_steps, bf16=not a.no_bf16,
-                      log_every=a.log_every, eval_every=a.eval_every, device=a.device)
-    mcfg = ModelConfig(d_model=a.d_model, n_layers=a.n_layers, n_heads=a.n_heads, d_ff=a.d_ff)
+                      log_every=a.log_every, eval_every=a.eval_every, device=a.device,
+                      p_flip=a.p_flip, jitter=a.jitter,
+                      canonical=a.canonical)
+    mcfg = ModelConfig(d_model=a.d_model, n_layers=a.n_layers, n_heads=a.n_heads, d_ff=a.d_ff,
+                       dropout=a.dropout, n_text_tokens=a.n_text_tokens,
+                       text_scale=a.text_scale, p_drop_text=a.p_drop_text)
     print(json.dumps(train(cfg, mcfg), indent=1))
 
 

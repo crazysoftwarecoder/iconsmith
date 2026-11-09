@@ -35,6 +35,9 @@ class ModelConfig:
     dropout: float = 0.0
     vocab_size: int = VOCAB_SIZE
     n_stroke_buckets: int = N_STROKE_BUCKETS
+    # v1 checkpoints: 1 token, unscaled. v2: name spread over several prefix slots, rescaled.
+    n_text_tokens: int = 1
+    text_scale: float = 1.0
 
 
 class RMSNorm(nn.Module):
@@ -73,13 +76,21 @@ class Attention(nn.Module):
         self.out = nn.Linear(d, d, bias=False)
         self.dropout = dropout
 
-    def forward(self, x: Tensor, mask: Tensor | None, cos: Tensor, sin: Tensor) -> Tensor:
+    def forward(self, x: Tensor, mask: Tensor | None, cos: Tensor, sin: Tensor,
+                cache: dict | None = None) -> Tensor:
         b, s, d = x.shape
         q, k, v = self.qkv(x).view(b, s, 3, self.h, d // self.h).permute(2, 0, 3, 1, 4)
         q, k = apply_rope(q, cos, sin), apply_rope(k, cos, sin)
+        causal = mask is None
+        if cache is not None:  # incremental decoding: append to and attend over past keys
+            if "k" in cache:
+                k, v = torch.cat([cache["k"], k], 2), torch.cat([cache["v"], v], 2)
+                assert s == 1, "cached decoding feeds one token at a time"
+                causal = False  # a single new query may see every cached key
+            cache["k"], cache["v"] = k, v
         # mask=None means causal via the fused kernel (no materialised S x S mask).
         y = F.scaled_dot_product_attention(
-            q, k, v, attn_mask=mask, is_causal=mask is None,
+            q, k, v, attn_mask=mask, is_causal=causal,
             dropout_p=self.dropout if self.training else 0.0,
         )
         return self.out(y.transpose(1, 2).reshape(b, s, d))
@@ -104,8 +115,9 @@ class Block(nn.Module):
         self.n2 = RMSNorm(d)
         self.mlp = SwiGLU(d, d_ff)
 
-    def forward(self, x: Tensor, mask: Tensor | None, cos: Tensor, sin: Tensor) -> Tensor:
-        x = x + self.attn(self.n1(x), mask, cos, sin)
+    def forward(self, x: Tensor, mask: Tensor | None, cos: Tensor, sin: Tensor,
+                cache: dict | None = None) -> Tensor:
+        x = x + self.attn(self.n1(x), mask, cos, sin, cache)
         return x + self.mlp(self.n2(x))
 
 
@@ -116,10 +128,12 @@ class Transformer(nn.Module):
         self.norm = RMSNorm(d)
         self.head_dim = d // n_heads
 
-    def forward(self, x: Tensor, mask: Tensor | None) -> Tensor:
-        cos, sin = rope_cache(x.shape[1], self.head_dim, x.device)
-        for blk in self.blocks:
-            x = blk(x, mask, cos, sin)
+    def forward(self, x: Tensor, mask: Tensor | None, cache: list[dict] | None = None,
+                pos: int = 0) -> Tensor:
+        cos, sin = rope_cache(pos + x.shape[1], self.head_dim, x.device)
+        cos, sin = cos[pos:], sin[pos:]
+        for i, blk in enumerate(self.blocks):
+            x = blk(x, mask, cos, sin, None if cache is None else cache[i])
         return self.norm(x)
 
 
@@ -147,9 +161,11 @@ class IconSmith(nn.Module):
         self.enc_out = nn.Linear(de, d, bias=False)
         # conditioning prefix
         self.stroke_emb = nn.Embedding(cfg.n_stroke_buckets, d)
-        self.text_proj = nn.Linear(cfg.text_dim, d)
+        # unit-norm MiniLM vectors are ~20x smaller per-dim than token embeddings (text_scale),
+        # and one slot is easily drowned out by style (n_text_tokens)
+        self.text_proj = nn.Linear(cfg.text_dim, cfg.n_text_tokens * d)
         self.null_style = nn.Parameter(torch.zeros(d))
-        self.null_text = nn.Parameter(torch.zeros(d))
+        self.null_text = nn.Parameter(torch.zeros(cfg.n_text_tokens, d))
         self.prefix_type = nn.Embedding(3, d)  # 0 stroke, 1 text, 2 style
         # decoder
         self.decoder = Transformer(d, cfg.n_layers, cfg.n_heads, cfg.d_ff, cfg.dropout)
@@ -159,7 +175,7 @@ class IconSmith(nn.Module):
 
     @property
     def prefix_len(self) -> int:
-        return 2 + self.cfg.k
+        return 1 + self.cfg.n_text_tokens + self.cfg.k
 
     def n_params(self) -> int:
         return sum(p.numel() for p in self.parameters())
@@ -192,12 +208,12 @@ class IconSmith(nn.Module):
             drop_text = torch.rand(b, device=dev) < p
         style = self.encode_style(exemplars)  # [B,k,d]
         style = torch.where(drop_style[:, None, None], self.null_style.expand_as(style), style)
-        text = self.text_proj(text_emb)  # [B,d]
-        text = torch.where(drop_text[:, None], self.null_text.expand_as(text), text)
+        text = self.text_proj(text_emb * self.cfg.text_scale).view(b, self.cfg.n_text_tokens, -1)
+        text = torch.where(drop_text[:, None, None], self.null_text.expand_as(text), text)
         stroke = self.stroke_emb(stroke_bucket)  # [B,d]
         types = self.prefix_type.weight
         prefix = torch.cat(
-            [(stroke + types[0])[:, None], (text + types[1])[:, None], style + types[2]], dim=1
+            [(stroke + types[0])[:, None], text + types[1], style + types[2]], dim=1
         )
         return prefix
 
@@ -218,6 +234,23 @@ class IconSmith(nn.Module):
         # real positions; pad positions themselves are ignored by the loss.
         h = self.decoder(x, None)
         return self.head(h[:, self.prefix_len :])
+
+    @torch.no_grad()
+    def start_decode(self, tokens: Tensor, text_emb: Tensor, exemplars: Tensor,
+                     stroke_bucket: Tensor, drop_text: Tensor) -> tuple[Tensor, list[dict]]:
+        """Run prefix + ``tokens`` once; returns next-token logits and a KV cache."""
+        no_drop = torch.zeros_like(drop_text)
+        prefix = self._prefix(text_emb, exemplars, stroke_bucket, no_drop, drop_text)
+        cache: list[dict] = [{} for _ in self.decoder.blocks]
+        h = self.decoder(torch.cat([prefix, self.tok_emb(tokens)], 1), None, cache)
+        return self.head(h[:, -1]), cache
+
+    @torch.no_grad()
+    def step_decode(self, tok: Tensor, cache: list[dict]) -> Tensor:
+        """Feed one token per row (shape [B]); returns next-token logits."""
+        pos = cache[0]["k"].shape[2]
+        h = self.decoder(self.tok_emb(tok[:, None]), None, cache, pos)
+        return self.head(h[:, -1])
 
     def loss(self, batch: dict) -> Tensor:
         b = batch
