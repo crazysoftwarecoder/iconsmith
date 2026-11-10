@@ -57,6 +57,14 @@ def rasterize(svg_text: str, px: int) -> np.ndarray:
     return np.asarray(im)[..., 3] > 127
 
 
+def alpha(svg_text: str, px: int) -> np.ndarray:
+    """Anti-aliased coverage in [0, 1], float32 [px, px]."""
+    svg_text = svg_text.replace("currentColor", "#000")
+    png = resvg_py.svg_to_bytes(svg_string=svg_text, width=px, height=px)
+    im = Image.open(io.BytesIO(bytes(png))).convert("RGBA")
+    return np.asarray(im, dtype=np.float32)[..., 3] / 255.0
+
+
 def iou(a: np.ndarray, b: np.ndarray) -> float:
     union = np.logical_or(a, b).sum()
     if union == 0:

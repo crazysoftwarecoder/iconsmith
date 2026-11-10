@@ -20,6 +20,7 @@ class SetSpec:
     heldout: bool
     name_from_path: Callable[[Path], str]
     exclude_suffixes: tuple[str, ...] = ()  # filename stems ending with these are skipped
+    exclude_re: str | None = None  # skip files whose path (relative to the library) matches
 
 
 @dataclass(frozen=True)
@@ -29,6 +30,7 @@ class Source:
     url: str
     license: str
     sets: tuple[SetSpec, ...]
+    fix_svg: Callable[[str], str] | None = None  # source-specific SVG text fix before parsing
 
 
 def _stem(p: Path) -> str:
@@ -50,6 +52,29 @@ def _fluent_name(p: Path) -> str:
     return re.sub(r"_\d+_(regular|filled|light)$", "", p.stem).replace("_", "-")
 
 
+def _underscore_name(p: Path) -> str:
+    return p.stem.replace("_", "-")
+
+
+def _carbon_name(p: Path) -> str:
+    return p.stem.replace("--", "-")
+
+
+def _iconpark_outline(svg: str) -> str:
+    """IconPark sources are two-tone (blue inner fills, white inner strokes); its outline theme
+    draws those as no fill and the outline colour, which is what a single-colour set should be."""
+    for old, new in (('fill="#2F88FF"', 'fill="none"'), ('stroke="#FFF"', 'stroke="black"'),
+                     ('stroke="white"', 'stroke="black"'), ('fill="#FFF"', 'fill="none"'),
+                     ('fill="white"', 'fill="none"')):
+        svg = svg.replace(old, new)
+    return svg
+
+
+_BRANDS = (r"(facebook|github|gitlab|google|linkedin|twitter|behance|pinterest|amazon|apple|"
+           r"android|windows|figma|discord|instagram|youtube|dribbble|slack|codepen|dropbox)")
+
+# Order matters: dataset_build draws every set's in-set test split from one RNG in this order,
+# so new libraries go at the end to keep the earlier sets' splits unchanged.
 SOURCES: tuple[Source, ...] = (
     Source(
         "lucide", "git", "https://github.com/lucide-icons/lucide", "ISC",
@@ -126,6 +151,54 @@ SOURCES: tuple[Source, ...] = (
         "octicons", "git", "https://github.com/primer/octicons", "MIT",
         (SetSpec("octicons", "icons/*-24.svg", "fill", True, _strip("-24")),),
     ),
+    Source(
+        "iconpark", "git", "https://github.com/bytedance/IconPark", "Apache-2.0",
+        (SetSpec("iconpark", "source/*/*.svg", "stroke", False, _stem,
+                 exclude_re=r"^source/(Brand|Emoji)/"),),
+        fix_svg=_iconpark_outline,
+    ),
+    Source(
+        "mingcute", "git", "https://github.com/Richard9394/MingCute", "Apache-2.0",
+        tuple(
+            SetSpec(f"mingcute/{st}", f"assets/svg/core/{d}/*/*.svg", "fill", False,
+                    _underscore_name, exclude_re=r"/(brands|emoji|cryptocurrency)/")
+            for st, d in (("line", "regular"), ("fill", "filled"))
+        ),
+    ),
+    Source(
+        "eva", "git", "https://github.com/akveo/eva-icons", "MIT",
+        (
+            SetSpec("eva/outline", "package/icons/outline/svg/*.svg", "fill", False,
+                    _strip("-outline"), exclude_re=_BRANDS),
+            SetSpec("eva/fill", "package/icons/fill/svg/*.svg", "fill", False, _stem,
+                    exclude_re=_BRANDS),
+        ),
+    ),
+    Source(
+        "akar", "git", "https://github.com/artcoholic/akar-icons", "MIT",
+        # the -fill icons are almost all brand logos, and fills in a stroke set anyway
+        (SetSpec("akar", "src/svg/*.svg", "stroke", False, _stem, ("-fill",),
+                 exclude_re=_BRANDS),),
+    ),
+    Source(
+        "majesticons", "git", "https://github.com/halfmage/majesticons", "MIT",
+        (
+            SetSpec("majesticons/line", "line/*.svg", "stroke", False, _strip("-line"),
+                    exclude_re=_BRANDS),
+            SetSpec("majesticons/solid", "solid/*.svg", "fill", False, _stem,
+                    exclude_re=_BRANDS),
+        ),
+    ),
+    Source(
+        "radix", "git", "https://github.com/radix-ui/icons", "MIT",
+        (SetSpec("radix", "packages/radix-icons/icons/*.svg", "fill", False, _stem,
+                 ("-logo",)),),
+    ),
+    Source(
+        "carbon", "npm", "https://registry.npmjs.org/@carbon/icons", "Apache-2.0",
+        (SetSpec("carbon", "svg/32/**/*.svg", "fill", False, _carbon_name,
+                 exclude_re=r"(^|/)logo--"),),
+    ),
 )
 
 
@@ -139,5 +212,7 @@ def iter_set_files(raw_root: Path, source: Source, spec: SetSpec) -> Iterator[tu
         if p.suffix.lower() != ".svg" or not p.is_file():
             continue
         if any(p.stem.endswith(suf) for suf in spec.exclude_suffixes):
+            continue
+        if spec.exclude_re and re.search(spec.exclude_re, p.relative_to(lib_root).as_posix()):
             continue
         yield spec.name_from_path(p), p

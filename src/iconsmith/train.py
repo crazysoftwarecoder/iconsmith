@@ -42,7 +42,11 @@ class TrainConfig:
     eval_batches: int = 50
     p_flip: float = 0.0
     jitter: float = 0.0
-    canonical: bool = False
+    canonical: int = 0  # 0 as stored, 1 sorted subpaths, 2 also canonical start points
+    n_content: int = 0
+    p_self_content: float = 0.0
+    content_raster: int = 0  # >0: content exemplars are pictures this many px square
+    self_noise: float = 4.0
 
 
 def resolve_device(name: str) -> str:
@@ -117,13 +121,17 @@ def train(cfg: TrainConfig, model_cfg: ModelConfig | None = None) -> dict:
     cfg.run_dir.mkdir(parents=True, exist_ok=True)
 
     train_ds = IconDataset(cfg.processed, "train", seed=cfg.seed, p_flip=cfg.p_flip,
-                           jitter=cfg.jitter, canonical=cfg.canonical)
+                           jitter=cfg.jitter, canonical=cfg.canonical,
+                           n_content=cfg.n_content, p_self_content=cfg.p_self_content,
+                           content_raster=cfg.content_raster,
+                           self_noise=cfg.self_noise)
     if cfg.overfit_n:
         train_ds = Subset(train_ds, list(range(min(cfg.overfit_n, len(train_ds)))))
         val_ds = train_ds
     else:
         val_ds = IconDataset(cfg.processed, "inset_test", seed=cfg.seed + 1,
-                             canonical=cfg.canonical)
+                             canonical=cfg.canonical, n_content=cfg.n_content,
+                             content_raster=cfg.content_raster)
     train_loader = DataLoader(
         train_ds, batch_size=cfg.batch_size, shuffle=True, collate_fn=collate, drop_last=False
     )
@@ -250,7 +258,17 @@ def main() -> None:
     ap.add_argument("--d-ff", type=int, default=1408)
     ap.add_argument("--p-flip", type=float, default=0.0, help="horizontal-flip augmentation prob")
     ap.add_argument("--jitter", type=float, default=0.0, help="scale/shift augmentation, e.g. 0.15")
-    ap.add_argument("--canonical", action="store_true", help="sort subpaths top-left first")
+    ap.add_argument("--canonical", type=int, nargs="?", const=1, default=0,
+                    help="1: sort subpaths top-left first; 2: also start each at its top-left")
+    ap.add_argument("--n-content", type=int, default=0,
+                    help="retrieved same-name icons from other sets per target (0 = off)")
+    ap.add_argument("--p-self-content", type=float, default=0.0,
+                    help="prob the content exemplar is a warped copy of the target")
+    ap.add_argument("--self-noise", type=float, default=4.0, help="warp size in grid units")
+    ap.add_argument("--content-mode", default="slots", choices=("slots", "tokens", "raster"))
+    ap.add_argument("--raster-px", type=int, default=32, help="content picture size (raster mode)")
+    ap.add_argument("--coord-fourier", type=int, default=0,
+                    help="sin/cos value features on coordinates and raster patches (frequencies)")
     ap.add_argument("--dropout", type=float, default=0.0)
     ap.add_argument("--n-text-tokens", type=int, default=1)
     ap.add_argument("--text-scale", type=float, default=1.0)
@@ -261,10 +279,14 @@ def main() -> None:
                       overfit_n=a.overfit, max_steps=a.max_steps, bf16=not a.no_bf16,
                       log_every=a.log_every, eval_every=a.eval_every, device=a.device,
                       p_flip=a.p_flip, jitter=a.jitter,
-                      canonical=a.canonical)
+                      canonical=a.canonical, n_content=a.n_content,
+                      p_self_content=a.p_self_content, self_noise=a.self_noise,
+                      content_raster=a.raster_px if a.content_mode == "raster" else 0)
     mcfg = ModelConfig(d_model=a.d_model, n_layers=a.n_layers, n_heads=a.n_heads, d_ff=a.d_ff,
                        dropout=a.dropout, n_text_tokens=a.n_text_tokens,
-                       text_scale=a.text_scale, p_drop_text=a.p_drop_text)
+                       text_scale=a.text_scale, p_drop_text=a.p_drop_text,
+                       n_content=a.n_content, content_mode=a.content_mode,
+                       raster_px=a.raster_px, coord_fourier=a.coord_fourier)
     print(json.dumps(train(cfg, mcfg), indent=1))
 
 

@@ -164,20 +164,61 @@ def decode(tokens: list[int]) -> Icon:
     return Icon(tuple(subpaths))
 
 
-def canonical_order(icon: Icon) -> Icon:
+def canonical_start(sp: Subpath) -> Subpath:
+    """Start a subpath at its top-left vertex (min y, then min x) where rendering allows.
+
+    The start vertex is otherwise arbitrary, and since x and y are separate tokens a sampler can
+    take x from one plausible start and y from another, landing on a point that is not on the
+    icon. Closed subpaths (last vertex == first) are rotated; open strokes may be reversed. Open
+    fills are left alone: reversing them flips the winding and would change nonzero holes.
+    """
+    cmds = list(sp.commands)
+    if len(cmds) < 3 or cmds[0][0] != "M" or cmds[-1][0] != "Z":
+        return sp
+    segs = cmds[1:-1]  # (cmd, pts) each ending at pts[-1]
+    verts = [cmds[0][1][0]] + [pts[-1] for _, pts in segs]
+
+    def yx(p: Point) -> tuple[int, int]:
+        return (p[1], p[0])
+
+    if verts[-1] == verts[0] and len(segs) > 1:  # closed: rotate
+        j = min(range(len(segs)), key=lambda i: yx(verts[i]))
+        if j == 0:
+            return sp
+        new = [("M", (verts[j],))] + segs[j:] + segs[:j] + [("Z", ())]
+        return Subpath(sp.mode, tuple(new))
+    if sp.mode == "stroke" and yx(verts[-1]) < yx(verts[0]):  # open stroke: reverse
+        rev = []
+        for i in range(len(segs) - 1, -1, -1):
+            cmd, pts = segs[i]
+            prev = verts[i]
+            if cmd == "C":
+                rev.append(("C", (pts[1], pts[0], prev)))
+            else:
+                rev.append((cmd, (prev,)))
+        return Subpath(sp.mode, tuple([("M", (verts[-1],))] + rev + [("Z", ())]))
+    return sp
+
+
+def canonical_order(icon: Icon, starts: bool = False) -> Icon:
     """Sort subpaths top-to-bottom, then left-to-right, within each run of same-mode subpaths.
 
     Source libraries draw parts in arbitrary order, which makes the first tokens (and so the whole
     layout) needlessly hard to predict. Sorting only inside same-mode runs keeps the renderer's
-    merged ``<path>`` groups, and therefore fill-rule holes, exactly as they were.
+    merged ``<path>`` groups, and therefore fill-rule holes, exactly as they were. With
+    ``starts`` each subpath is first normalised by ``canonical_start`` and sorted by its start.
     """
     def key(sp: Subpath) -> tuple[int, int]:
+        if starts:
+            x, y = sp.commands[0][1][0]
+            return (y, x)
         pts = [p for _, ps in sp.commands for p in ps]
         return (min(y for _, y in pts), min(x for x, _ in pts)) if pts else (0, 0)
 
+    subpaths = [canonical_start(sp) for sp in icon.subpaths] if starts else list(icon.subpaths)
     out: list[Subpath] = []
     run: list[Subpath] = []
-    for sp in icon.subpaths:
+    for sp in subpaths:
         if run and sp.mode != run[0].mode:
             out.extend(sorted(run, key=key))
             run = []

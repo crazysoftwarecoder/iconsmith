@@ -124,3 +124,19 @@ def test_canonical_order_sorts_within_mode_runs_only():
     out = canonical_order(icon)
     assert [s.mode for s in out.subpaths] == ["stroke", "stroke", "fill_nz", "fill_nz", "stroke"]
     assert [s.commands[0][1][0][1] for s in out.subpaths] == [10, 50, 20, 90, 5]
+
+
+def test_canonical_start_rotates_closed_and_reverses_open_strokes():
+    from iconsmith.tokenizer import canonical_start
+
+    closed = Subpath("fill_nz", (("M", ((10, 50),)), ("L", ((30, 5),)), ("L", ((50, 50),)),
+                                 ("L", ((10, 50),)), ("Z", ())))
+    out = canonical_start(closed)
+    assert out.commands[0] == ("M", ((30, 5),))
+    assert [c for c, _ in out.commands] == ["M", "L", "L", "L", "Z"]
+    assert out.commands[-2][1][0] == (30, 5)  # still closes at its (new) start
+    open_ = Subpath("stroke", (("M", ((0, 90),)), ("C", ((1, 2), (3, 4), (20, 10))), ("Z", ())))
+    rev = canonical_start(open_)
+    assert rev.commands == (("M", ((20, 10),)), ("C", ((3, 4), (1, 2), (0, 90))), ("Z", ()))
+    open_fill = Subpath("fill_nz", open_.commands)
+    assert canonical_start(open_fill) == open_fill  # reversing would flip the winding

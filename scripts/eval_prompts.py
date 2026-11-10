@@ -19,9 +19,16 @@ import torch
 from PIL import Image
 
 sys.path.insert(0, str(Path(__file__).parent))
-from generate import load_model, pick_exemplars, png, sample  # noqa: E402
+from generate import (  # noqa: E402
+    load_model,
+    pick_exemplars,
+    png,
+    reference_svgs,
+    retrieve_content,
+    sample_best,
+)
 
-from iconsmith.data import K, _SetShard  # noqa: E402
+from iconsmith.data import ContentPool, K, _SetShard  # noqa: E402
 from iconsmith.render import icon_to_svg, rasterize  # noqa: E402
 from iconsmith.text_embed import embed_names  # noqa: E402
 from iconsmith.tokenizer import decode  # noqa: E402
@@ -41,11 +48,15 @@ def main() -> None:
     ap.add_argument("--cfg", type=float, default=2.0)
     ap.add_argument("--temperature", type=float, default=0.6)
     ap.add_argument("--top-p", type=float, default=0.95)
+    ap.add_argument("--best-of", type=int, default=1)
+    ap.add_argument("--rerank-ref", action="store_true")
+    ap.add_argument("--start-ref", action="store_true", help="force the reference's first point")
     ap.add_argument("--seed", type=int, default=0)
     ap.add_argument("--out", type=Path, default=None)
     a = ap.parse_args()
 
-    meta = {m["name"]: m for m in json.loads((a.processed / "sets.json").read_text())}[a.set]
+    metas = {m["name"]: m for m in json.loads((a.processed / "sets.json").read_text())}
+    meta = metas[a.set]
     sw = meta["stroke_width_rel_median"]
     device = resolve_device("auto")
     model = load_model(a.ckpt, device)
@@ -56,9 +67,25 @@ def main() -> None:
     rng = np.random.default_rng(a.seed)
     gen = torch.Generator(device=device).manual_seed(a.seed)
     exemplars, _ = pick_exemplars(shard, rng, K)
-    text = torch.from_numpy(embed_names(list(WORDS))).repeat_interleave(a.num, 0)
-    toks = sample(model, text, exemplars[None], meta["stroke_bucket"], len(text),
-                  a.temperature, a.top_p, device, gen, a.cfg)
+    emb = embed_names(list(WORDS))
+    text = torch.from_numpy(emb).repeat_interleave(a.num, 0)
+    need_pool = model.cfg.n_content or a.rerank_ref or a.start_ref
+    pool = ContentPool(a.processed, model.canonical) if need_pool else None
+    content, _ = retrieve_content(model, pool, emb, list(metas).index(a.set))
+    if a.rerank_ref or a.start_ref:  # per word, so each word is reranked against its own reference
+        ref_svgs = reference_svgs(pool, emb, list(metas).index(a.set), sw)
+        toks = []
+        for w_i in range(len(WORDS)):
+            c = None if content is None else content[w_i : w_i + 1]
+            toks += sample_best(model, text[w_i * a.num : w_i * a.num + 1], exemplars[None],
+                                meta["stroke_bucket"], a.num, a.best_of, a.temperature, a.top_p,
+                                device, gen, a.cfg, c, ref_svgs[w_i][1] if a.rerank_ref else None,
+                                sw, ref_svgs[w_i][2] if a.start_ref else None)
+    else:
+        if content is not None:
+            content = content.repeat_interleave(a.num, 0)
+        toks = sample_best(model, text, exemplars[None], meta["stroke_bucket"], len(text),
+                           a.best_of, a.temperature, a.top_p, device, gen, a.cfg, content)
 
     hits, rows = {}, []
     for w_i, word in enumerate(WORDS):
@@ -78,7 +105,9 @@ def main() -> None:
         rows.append(row)
     total = sum(hits.values())
     print(json.dumps(hits))
-    print(f"[eval] {a.ckpt} cfg {a.cfg}: {total}/{len(WORDS) * a.num} hits "
+    print(f"[eval] {a.ckpt} cfg {a.cfg} best-of {a.best_of} rerank-ref {a.rerank_ref} "
+          f"start-ref {a.start_ref}: "
+          f"{total}/{len(WORDS) * a.num} hits "
           f"({total / (len(WORDS) * a.num):.0%})")
     if a.out:
         a.out.parent.mkdir(parents=True, exist_ok=True)

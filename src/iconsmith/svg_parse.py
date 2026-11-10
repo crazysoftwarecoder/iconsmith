@@ -143,7 +143,11 @@ def parse_svg(text: str, grid: int = GRID) -> ParsedIcon:
             dropped += 1
             continue
         vals = getattr(el, "values", {}) or {}
-        filled = _paint_is_set(vals.get("fill", "black"))
+        if _float(vals.get("opacity"), 1.0) <= 0:  # e.g. Eva's invisible full-size rect
+            dropped += 1
+            continue
+        filled = (_paint_is_set(vals.get("fill", "black"))
+                  and _float(vals.get("fill-opacity"), 1.0) > 0)
         sw = _float(vals.get("stroke-width", 1), 1.0)
         stroked = _paint_is_set(vals.get("stroke")) and sw > 0
         if not filled and not stroked:

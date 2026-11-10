@@ -123,3 +123,93 @@ def test_cached_decoding_matches_full_forward():
     for t in range(1, toks.shape[1] - 1):
         steps.append(m.step_decode(toks[:, t], cache))
     assert torch.allclose(torch.stack(steps, 1), full, atol=1e-4)
+
+
+def test_content_exemplars_extend_prefix_and_cached_decoding():
+    torch.manual_seed(0)
+    cfg = ModelConfig(d_model=64, n_layers=2, n_heads=4, d_ff=128, enc_d_model=64, enc_layers=1,
+                      enc_heads=4, n_text_tokens=4, n_content=2, content_slots=3)
+    m = IconSmith(cfg).eval()
+    assert m.prefix_len == 1 + 4 + cfg.k + 2 * 3
+    b = 2
+    toks = torch.randint(10, 266, (b, 9))
+    toks[:, 0] = 1
+    text = torch.randn(b, cfg.text_dim)
+    ex = torch.randint(10, 266, (b, cfg.k, 6))
+    content = torch.randint(10, 266, (b, 2, 7))
+    content[1, 1] = PAD  # an all-pad content row must not produce NaNs
+    bucket = torch.zeros(b, dtype=torch.long)
+    no = torch.zeros(b, dtype=torch.bool)
+    full = m(toks, text, ex, bucket, drop_style=no, drop_text=no, content=content)
+    assert torch.isfinite(full).all()
+    nocontent = m(toks, text, ex, bucket, drop_style=no, drop_text=no)
+    assert not torch.allclose(full, nocontent)
+    logits, cache = m.start_decode(toks[:, :1], text, ex, bucket, no, content)
+    steps = [logits] + [m.step_decode(toks[:, t], cache) for t in range(1, toks.shape[1] - 1)]
+    assert torch.allclose(torch.stack(steps, 1), full, atol=1e-4)
+
+
+def test_token_content_mode_cached_decoding():
+    torch.manual_seed(0)
+    cfg = ModelConfig(d_model=64, n_layers=2, n_heads=4, d_ff=128, enc_d_model=64, enc_layers=1,
+                      enc_heads=4, n_text_tokens=4, n_content=1, content_mode="tokens")
+    m = IconSmith(cfg).eval()
+    b = 2
+    toks = torch.randint(10, 266, (b, 9))
+    toks[:, 0] = 1
+    text, ex = torch.randn(b, cfg.text_dim), torch.randint(10, 266, (b, cfg.k, 6))
+    content = torch.randint(10, 266, (b, 1, 7))
+    content[1, 0, 4:] = PAD
+    bucket, no = torch.zeros(b, dtype=torch.long), torch.zeros(b, dtype=torch.bool)
+    full = m(toks, text, ex, bucket, drop_style=no, drop_text=no, content=content)
+    assert full.shape[1] == toks.shape[1] - 1 and torch.isfinite(full).all()
+    logits, cache = m.start_decode(toks[:, :1], text, ex, bucket, no, content)
+    steps = [logits] + [m.step_decode(toks[:, t], cache) for t in range(1, toks.shape[1] - 1)]
+    assert torch.allclose(torch.stack(steps, 1), full, atol=1e-4)
+
+
+def test_raster_content_mode():
+    torch.manual_seed(0)
+    cfg = ModelConfig(d_model=64, n_layers=2, n_heads=4, d_ff=128, enc_d_model=64, enc_layers=1,
+                      enc_heads=4, n_text_tokens=4, n_content=1, content_mode="raster",
+                      raster_px=16, raster_patch=4)
+    m = IconSmith(cfg).eval()
+    b = 2
+    toks = torch.randint(10, 266, (b, 9))
+    toks[:, 0] = 1
+    text, ex = torch.randn(b, cfg.text_dim), torch.randint(10, 266, (b, cfg.k, 6))
+    raster = torch.rand(b, 1, 16, 16)
+    bucket, no = torch.zeros(b, dtype=torch.long), torch.zeros(b, dtype=torch.bool)
+    # fixed prefix length, with or without a picture, so CFG / dropout never shift positions
+    p_with = m._prefix(text, ex, bucket, no, no, raster)
+    p_without = m._prefix(text, ex, bucket, no, no, None)
+    assert p_with.shape == p_without.shape
+    assert p_with.shape[1] == m.prefix_len == 1 + 4 + cfg.k + 16
+    full = m(toks, text, ex, bucket, drop_style=no, drop_text=no, content=raster)
+    other = m(toks, text, ex, bucket, drop_style=no, drop_text=no, content=raster.flip(-1))
+    assert torch.isfinite(full).all() and not torch.allclose(full, other)
+    logits, cache = m.start_decode(toks[:, :1], text, ex, bucket, no, raster)
+    steps = [logits] + [m.step_decode(toks[:, t], cache) for t in range(1, toks.shape[1] - 1)]
+    assert torch.allclose(torch.stack(steps, 1), full, atol=1e-4)
+
+
+def test_coord_fourier_raster_cached_decoding():
+    torch.manual_seed(0)
+    cfg = ModelConfig(d_model=64, n_layers=2, n_heads=4, d_ff=128, enc_d_model=64, enc_layers=1,
+                      enc_heads=4, n_content=1, content_mode="raster", raster_px=16,
+                      raster_patch=4, coord_fourier=8)
+    m = IconSmith(cfg).eval()
+    b = 2
+    toks = torch.randint(10, 266, (b, 9))
+    toks[:, 0] = 1
+    text, ex = torch.randn(b, cfg.text_dim), torch.randint(10, 266, (b, cfg.k, 6))
+    raster = torch.rand(b, 1, 16, 16)
+    bucket, no = torch.zeros(b, dtype=torch.long), torch.zeros(b, dtype=torch.bool)
+    full = m(toks, text, ex, bucket, drop_style=no, drop_text=no, content=raster)
+    logits, cache = m.start_decode(toks[:, :1], text, ex, bucket, no, raster)
+    steps = [logits] + [m.step_decode(toks[:, t], cache) for t in range(1, toks.shape[1] - 1)]
+    assert torch.allclose(torch.stack(steps, 1), full, atol=1e-4)
+    # only coordinate tokens get the value features; command tokens embed as before
+    t = torch.tensor([1, 3, 5, 10 + 100])
+    delta = (m.embed(t) - m.tok_emb(t)).norm(dim=-1)
+    assert torch.all(delta[:3] == 0) and delta[3] > 0

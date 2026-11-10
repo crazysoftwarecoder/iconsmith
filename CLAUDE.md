@@ -111,3 +111,15 @@ docs/figures/      roundtrip.json, contact_<set>.png
 - Coordinate frame is `(0, 0, width, height)` as reified by svgelements (it applies the
   viewBox transform itself). Material Symbols' `viewBox="0 -960 960 960"` depends on this.
 - Rasterizer is resvg-py (self-contained wheel); cairosvg could not find Homebrew cairo.
+
+## Current best model (v11)
+
+`models/v11/ckpt_best.pt` (Git LFS), trained on `data/processed_v2` (33 sets). `data/` is not committed:
+rebuild it first with the dataset build step above (the new libraries are fetched by `iconsmith.sources`).
+Best settings (mixed rerank, see `docs/iteration-log.md` iter 12):
+
+    uv run python scripts/generate.py --ckpt models/v11/ckpt_best.pt --processed data/processed_v2 \
+        --set lucide --name heart --name bell --cfg 1.5 --temperature 0.8 --best-of 8 --start-ref --rerank-ref
+
+Works well: heart, sun, mail, calendar, lock, bell, user, star, camera, trash, search. Still fails:
+coffee/cup, key, cloud, moon, phone, umbrella, anchor.

@@ -22,15 +22,16 @@ from iconsmith.tokenizer import decode, encode
 def main(raw_root: Path, n: int = 500, px: int = 128, seed: int = 0) -> dict:
     rng = random.Random(seed)
     files = [
-        (spec.name, name, p)
+        (spec.name, name, p, src.fix_svg)
         for src, spec in all_sets()
         for name, p in iter_set_files(raw_root, src, spec)
     ]
     sample = rng.sample(files, min(n, len(files)))
     results: list[tuple[str, str, float]] = []
     skipped = 0
-    for set_name, name, path in sample:
+    for set_name, name, path, fix in sample:
         src = path.read_text(encoding="utf-8")
+        src = fix(src) if fix else src  # same source-specific fix as dataset_build
         try:
             parsed = parse_svg(src)
         except SvgParseError:

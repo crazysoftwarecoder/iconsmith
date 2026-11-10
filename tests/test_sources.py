@@ -65,3 +65,35 @@ def test_iter_set_files_excludes_material_fill_and_ionicons_variants(tmp_path):
     assert [n for n, _ in iter_set_files(tmp_path, src, by["ionicons/filled"])] == ["add"]
     assert [n for n, _ in iter_set_files(tmp_path, src, by["ionicons/outline"])] == ["add"]
     assert [n for n, _ in iter_set_files(tmp_path, src, by["ionicons/sharp"])] == ["add"]
+
+
+def test_new_libraries_exclude_brands(tmp_path):
+    cases = {
+        "iconpark": (["source/Base/home.svg", "source/Brand/github.svg", "source/Emoji/smile.svg"],
+                     "iconpark", ["home"]),
+        "mingcute": (["assets/svg/core/regular/food/beef_off.svg",
+                      "assets/svg/core/regular/brands/github.svg"], "mingcute/line", ["beef-off"]),
+        "akar": (["src/svg/coffee.svg", "src/svg/github-fill.svg"], "akar", ["coffee"]),
+        "radix": (["packages/radix-icons/icons/heart.svg",
+                   "packages/radix-icons/icons/github-logo.svg"], "radix", ["heart"]),
+        "carbon": (["svg/32/cafe.svg", "svg/32/4K--filled.svg", "svg/32/logo--github.svg"],
+                   "carbon", ["4K-filled", "cafe"]),
+        "eva": (["package/icons/outline/svg/heart-outline.svg",
+                 "package/icons/outline/svg/github-outline.svg"], "eva/outline", ["heart"]),
+    }
+    for lib, (files, set_name, want) in cases.items():
+        for f in files:
+            p = tmp_path / lib / f
+            p.parent.mkdir(parents=True, exist_ok=True)
+            p.write_text("<svg/>")
+        src = next(s for s in SOURCES if s.library == lib)
+        spec = next(s for s in src.sets if s.name == set_name)
+        assert [n for n, _ in iter_set_files(tmp_path, src, spec)] == want, lib
+
+
+def test_iconpark_two_tone_becomes_outline():
+    src = next(s for s in SOURCES if s.library == "iconpark")
+    svg = '<rect fill="#2F88FF" stroke="black"/><path stroke="#FFF" d="M0 0"/>'
+    out = src.fix_svg(svg)
+    assert 'fill="none"' in out and "#2F88FF" not in out and 'stroke="black"' in out
+    assert "#FFF" not in out

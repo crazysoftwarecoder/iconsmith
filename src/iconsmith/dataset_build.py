@@ -51,7 +51,8 @@ def build_dataset(
         widths: list[float] = []
         for name, path in tqdm(files, desc=spec.name, leave=False):
             try:
-                parsed = parse_svg(path.read_text(encoding="utf-8"))
+                text = path.read_text(encoding="utf-8")
+                parsed = parse_svg(src.fix_svg(text) if src.fix_svg else text)
             except SvgParseError:
                 st["n_empty"] += 1
                 continue

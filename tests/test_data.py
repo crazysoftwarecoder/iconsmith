@@ -58,3 +58,26 @@ def test_exemplars_truncated_to_max_len(processed):
     it = ds[0]
     assert it["exemplars"].shape == (K, 8)
     assert (it["exemplars"] != PAD).all()  # truncated, not padded
+
+
+def test_self_content_is_perturbed_copy_of_target(processed):
+    from iconsmith.tokenizer import decode
+
+    ds = IconDataset(processed, "train", n_content=1, p_self_content=1.0, self_noise=2.0)
+    for i in range(min(5, len(ds))):
+        item = ds[i]
+        target = decode(item["tokens"].tolist())
+        c = item["content"][0]
+        cont = decode(c[c != PAD].tolist())
+        assert len(cont.subpaths) == len(target.subpaths)
+        assert [s.mode for s in cont.subpaths] == [s.mode for s in target.subpaths]
+
+
+def test_raster_content(processed):
+    ds = IconDataset(processed, "train", n_content=1, content_raster=16, p_self_content=0.5)
+    item = ds[0]
+    assert item["content"].shape == (1, 16, 16) and item["content"].dtype == torch.float32
+    assert 0 <= float(item["content"].min()) and float(item["content"].max()) <= 1
+    assert float(item["content"].sum()) > 0  # something was drawn
+    batch = collate([ds[0], ds[1]])
+    assert batch["content"].shape == (2, 1, 16, 16)

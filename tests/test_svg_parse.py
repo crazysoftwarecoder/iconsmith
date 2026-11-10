@@ -156,3 +156,14 @@ def test_zero_length_stroke_dot_is_kept():
     (sp,) = p.icon.subpaths
     assert [c for c, _ in sp.commands] == ["M", "L", "Z"]
     assert sp.commands[0][1][0] == sp.commands[1][1][0]
+
+
+def test_invisible_elements_are_dropped():
+    # Eva icons carry a full-size rect made invisible through a CSS class
+    svg = ('<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><defs><style>'
+           '.cls-1{fill:#fff;opacity:0;}</style></defs>'
+           '<rect class="cls-1" width="24" height="24"/>'
+           '<rect fill-opacity="0" width="24" height="24"/>'
+           '<path d="M4 4H20V20H4Z"/></svg>')
+    p = parse_svg(svg)
+    assert len(p.icon.subpaths) == 1
